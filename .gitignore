@@ -1,0 +1,4 @@
+pkg/
+src/
+*.pkg.tar.*
+ravn-git-bare-clone-*.tar.gz
