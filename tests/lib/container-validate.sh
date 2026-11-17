@@ -82,6 +82,8 @@ phase_verify_binaries_and_symlinks() {
 
 phase_exercise_public_commands() {
   printf '\n==> [container 5/5] Confirming the installed public commands behave as expected\n'
+  git config --global user.name "Arch Container"
+  git config --global user.email "ci@archlinux.local"
   phase_verify_binaries_and_symlinks
 
   /usr/bin/ravn-wt help > /tmp/ravn-wt-help.txt
