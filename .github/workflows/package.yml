@@ -1,0 +1,432 @@
+name: Package from upstream tag
+
+# Empaquetado y publicación del .pkg de ravn-git-bare-clone (issue #3), con el patrón
+# que ya funciona en ravn-trio-arch. La fuente es el archivo público del tag de
+# robert-flo/ravn-git-bare-clone que declara el PKGBUILD: makepkg lo baja y verifica
+# su sha256, así que el paquete construido es siempre la versión del PKGBUILD
+# (la sube update-upstream.yml), sin importar el sha que traiga el dispatch. El .pkg
+# se prueba instalado y, en repository_dispatch, entra al canal stable de
+# omarchy-personal-repo con el toolkit de omarchy-pkgs (bin/publish-artifact contra un
+# remote rclone local, el mismo patrón de release-personal.yml), salvo que el canal
+# ya sirva ese mismo pkgver-pkgrel: entonces no se republica. Despachan source-updated:
+# el CI verde de ravn-git-bare-clone (cada merge a main) y update-upstream.yml tras subir
+# la versión. workflow_dispatch permite repetirlo a mano: construye e instala pero NO publica.
+
+on:
+  repository_dispatch:
+    types:
+      - source-updated
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+jobs:
+  package:
+    name: Build, install-test and publish the package
+    # Dos dispatches no deben pisarse el push a gh-pages: la fila
+    # serializa los runs del repo.
+    concurrency:
+      group: package-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base
+    steps:
+      # Primer paso: archlinux:base no trae git, y sin git actions/checkout
+      # cae al fallback REST que baja el arbol sin historial (lección del
+      # primer run real en el repo del patrón, y el mismo orden de ci.yml).
+      - name: Install build and runtime dependencies
+        run: |
+          set -euo pipefail
+
+          pacman -Syu --noconfirm base-devel git github-cli gnupg openssh jq
+
+      - name: Checkout this package repository
+        uses: actions/checkout@v4
+
+      - name: Stage the build directory
+        env:
+          PKG_BUILD: ${{ github.workspace }}/build
+        run: |
+          set -euo pipefail
+
+          # La fuente es el archivo del tag que declara el PKGBUILD: makepkg
+          # lo baja y verifica el sha256. Un tarball vendoreado o un source
+          # local (el esquema viejo de fuente privada) muere acá, no en
+          # makepkg.
+          vendored=( ravn-git-bare-clone-*.tar.gz )
+          if [[ -e "${vendored[0]}" ]]; then
+            echo "quedó un tarball vendoreado en la raíz del repo: ${vendored[*]}" >&2
+            exit 1
+          fi
+          grep -qF 'source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")' PKGBUILD || {
+            echo "el PKGBUILD no declara el archivo del tag de GitHub como source" >&2
+            exit 1
+          }
+
+          mkdir -p "${PKG_BUILD}"
+          cp PKGBUILD "${PKG_BUILD}/"
+
+      - name: Build the package and install-test it
+        id: build
+        env:
+          PKG_BUILD: ${{ github.workspace }}/build
+        run: |
+          set -euo pipefail
+
+          useradd --create-home builder
+          chown -R builder:builder "${PKG_BUILD}"
+          ( cd "${PKG_BUILD}" && su builder -c "makepkg --nodeps" )
+
+          pkg_files=( "${PKG_BUILD}"/ravn-git-bare-clone-*.pkg.tar.zst )
+          if (( ${#pkg_files[@]} != 1 )) || [[ ! -e "${pkg_files[0]}" ]]; then
+            echo "no quedó exactamente un .pkg.tar.zst en ${PKG_BUILD}" >&2
+            exit 1
+          fi
+
+          pacman -U --noconfirm --nodeps --nodeps "${pkg_files[0]}"
+
+          # Smoke del payload instalado
+          test -L /usr/bin/ravn-wt
+          test "$(readlink /usr/bin/ravn-wt)" = "/opt/ravn-wt/ravn-wt"
+          test -L /usr/bin/ravn-git-bare-clone
+          test "$(readlink /usr/bin/ravn-git-bare-clone)" = "/opt/ravn-wt/ravn-wt"
+          test -L /usr/bin/git-bare-clone
+          test "$(readlink /usr/bin/git-bare-clone)" = "/opt/ravn-wt/bin/git-bare-clone"
+          test -L /usr/bin/git-create-worktree
+          test "$(readlink /usr/bin/git-create-worktree)" = "/opt/ravn-wt/bin/git-create-worktree"
+          test -L /usr/bin/git-issue-worktree
+          test "$(readlink /usr/bin/git-issue-worktree)" = "/opt/ravn-wt/bin/git-issue-worktree"
+
+          test -x /opt/ravn-wt/ravn-wt
+          test -x /opt/ravn-wt/bin/git-bare-clone
+          test -x /opt/ravn-wt/bin/git-create-worktree
+          test -x /opt/ravn-wt/bin/git-issue-worktree
+          test -f /opt/ravn-wt/runtime/commands.tsv
+          test -f /opt/ravn-wt/runtime/lib/global_fn.sh
+          test -f /usr/share/licenses/ravn-git-bare-clone/LICENSE
+          test -L /usr/share/bash-completion/completions/ravn-wt
+          test -L /usr/share/bash-completion/completions/ravn-git-bare-clone
+          test -L /usr/share/bash-completion/completions/git-bare-clone
+          test -L /usr/share/zsh/site-functions/_ravn-wt
+          test -L /usr/share/zsh/site-functions/_ravn-git-bare-clone
+          test -L /usr/share/zsh/site-functions/_git-bare-clone
+          pacman -Qkk ravn-git-bare-clone > /dev/null
+
+          test_home=/tmp/ravn-git-bare-clone-package-test
+          mkdir -p "$test_home"
+          NO_COLOR=1 HOME="$test_home" TERM=dumb /usr/bin/ravn-wt help > /tmp/ravn-wt-help-output
+          grep -Fq 'ravn-wt' /tmp/ravn-wt-help-output
+          grep -Fq 'clone' /tmp/ravn-wt-help-output
+
+          NO_COLOR=1 HOME="$test_home" TERM=dumb /usr/bin/ravn-git-bare-clone help > /tmp/ravn-git-bare-clone-help-output
+          grep -Fq 'ravn-wt' /tmp/ravn-git-bare-clone-help-output
+
+          pkgver="$(bsdtar -xOf "${pkg_files[0]}" .PKGINFO | awk -F' = ' '$1=="pkgver"{print $2; exit}')"
+          printf 'versión construida: %s\n' "$pkgver"
+          {
+            printf 'pkgver=%s\n' "$pkgver"
+          } >> "${GITHUB_OUTPUT}"
+          echo "instalación verificada: /usr/bin/ravn-wt, /usr/bin/ravn-git-bare-clone, payload en /opt/ravn-wt y help corriendo"
+
+      - name: Upload the package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ravn-git-bare-clone-${{ steps.build.outputs.pkgver }}
+          path: build/*.pkg.tar.zst
+          if-no-files-found: error
+
+      # ------------------------------------------------------------------ #
+      # Publicación: el .pkg construido e instalado entra al canal stable  #
+      # del repo personal (gh-pages de omarchy-personal-repo) con el       #
+      # toolkit de omarchy-pkgs: bin/publish-artifact firma y corre        #
+      # repo-add contra el db del canal. La poda mantiene los últimos N    #
+      # paquetes por pkgname (N=5, aquí por versión, no por contador .r:   #
+      # este repo publica versiones simples) y bin/unpublish-packages      #
+      # retira del db lo que la poda ya no sirve. Credenciales solo en     #
+      # secrets de este repo: SSH_DEPLOY_KEY (deploy key de                #
+      # omarchy-personal-repo), GPG_PRIVATE_KEY y GPG_PASSPHRASE (la clave #
+      # de firma del repo). Publica repository_dispatch; el dogfooding por #
+      # workflow_dispatch construye e instala pero NO publica.             #
+      # ------------------------------------------------------------------ #
+      - name: Install the publish tooling
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          set -euo pipefail
+
+          pacman -S --noconfirm --needed rclone zstd
+
+      - name: Checkout the omarchy-pkgs publish tooling
+        if: github.event_name == 'repository_dispatch'
+        uses: actions/checkout@v4
+        with:
+          repository: robert-flo/omarchy-pkgs
+          ref: personal
+          path: omarchy-pkgs
+
+      - name: Checkout the personal repo (gh-pages)
+        if: github.event_name == 'repository_dispatch'
+        uses: actions/checkout@v4
+        with:
+          repository: robert-flo/omarchy-personal-repo
+          ref: gh-pages
+          path: repo
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      # Idempotencia: el CI de ravn-git-bare-clone despacha en cada merge a main, haya
+      # o no versión nueva, y el PKGBUILD solo cambia cuando
+      # update-upstream.yml sube la versión. Si el db del canal ya sirve el
+      # mismo archivo (pkgname-pkgver-pkgrel-arch), publicar, podar y firmar
+      # se saltan: sin commit nuevo en gh-pages ni .pkg pisado.
+      - name: Check whether the channel already serves this package
+        id: channel
+        if: github.event_name == 'repository_dispatch'
+        env:
+          CHANNEL: ${{ github.workspace }}/repo/stable/x86_64
+        run: |
+          set -euo pipefail
+
+          pkg_files=( build/*.pkg.tar.zst )
+          if (( ${#pkg_files[@]} != 1 )) || [[ ! -e "${pkg_files[0]}" ]]; then
+            echo "no quedó exactamente un .pkg.tar.zst para comparar con el canal" >&2
+            exit 1
+          fi
+          pkgfile="$(basename "${pkg_files[0]}")"
+          db="$CHANNEL/omarchy.db.tar.zst"
+          served=""
+          if [[ -f "$db" ]]; then
+            served="$(tar -xO -f "$db" --wildcards '*/desc' 2>/dev/null | awk '/^%FILENAME%$/{getline; print}' || true)"
+          fi
+          published=false
+          if [[ -f "$CHANNEL/$pkgfile" ]] && grep -qxF "$pkgfile" <<<"$served"; then
+            published=true
+            echo "el canal ya sirve $pkgfile: no se republica"
+          else
+            echo "el canal no sirve $pkgfile: se publica"
+          fi
+          printf 'published=%s\n' "$published" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the package into the stable channel
+        id: publish
+        if: github.event_name == 'repository_dispatch' && steps.channel.outputs.published != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          pkg_files=( build/*.pkg.tar.zst )
+          if (( ${#pkg_files[@]} != 1 )) || [[ ! -e "${pkg_files[0]}" ]]; then
+            echo "no quedó exactamente un .pkg.tar.zst para publicar" >&2
+            exit 1
+          fi
+          pkgfile="${pkg_files[0]}"
+          pkgname="$(bsdtar -xOf "$pkgfile" .PKGINFO | awk -F' = ' '$1=="pkgname"{print $2; exit}')"
+          pkgbase="$(bsdtar -xOf "$pkgfile" .PKGINFO | awk -F' = ' '$1=="pkgbase"{print $2; exit}')"
+          pkgbase="${pkgbase:-$pkgname}"
+          [[ -n "$pkgname" ]] || { echo "el .PKGINFO no trae pkgname" >&2; exit 1; }
+
+          bash omarchy-pkgs/bin/publish-artifact --remote "$GITHUB_WORKSPACE/repo" --mirror stable --arch x86_64 "$pkgfile"
+
+          {
+            printf 'pkgname=%s\n' "$pkgname"
+            printf 'pkgbase=%s\n' "$pkgbase"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Prune the channel to the last N packages
+        if: github.event_name == 'repository_dispatch' && steps.channel.outputs.published != 'true'
+        env:
+          REPO_DIR: ${{ github.workspace }}/repo
+          PKG_NAMES: ${{ steps.publish.outputs.pkgname }}
+          PKG_BASES: ${{ steps.publish.outputs.pkgbase }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          REPO_DIR="${REPO_DIR:?}"
+          PKG_NAMES="${PKG_NAMES:?}"
+          PKG_BASES="${PKG_BASES:?}"
+          KEEP_N="${PRUNE_KEEP_N:-5}"
+          CHANNEL="$REPO_DIR/stable/x86_64"
+          DB="$CHANNEL/omarchy.db.tar.zst"
+          [[ -f "$DB" ]] || { echo "no hay db en $DB" >&2; exit 1; }
+          [[ $KEEP_N =~ ^[0-9]+$ ]] || { echo "PRUNE_KEEP_N no es un número: $KEEP_N" >&2; exit 1; }
+
+          db_filenames() {
+            # GNU tar autodetecta la compresión del db (zstd en el canal
+            # real; el fixture del test también la resuelve).
+            tar -xO -f "$DB" --wildcards '*/desc' 2>/dev/null |
+              awk '/^%FILENAME%$/{getline; print}'
+          }
+
+          db_files="$(db_filenames | sort -u)"
+          for pkgname in $PKG_NAMES; do
+            # Este repo publica versiones simples (ravn-git-bare-clone-0.2.1-1-…),
+            # no el esquema <base>.r<N>.<sha>: la ventana se ordena por
+            # versión (sort -V, así 0.1.10 queda más nueva que 0.1.9).
+            mapfile -t versions < <(
+              cd "$CHANNEL" &&
+              for f in $(ls -1 | grep -E "^${pkgname}-[0-9][0-9a-zA-Z.]*-[0-9]+-(x86_64|any)\.pkg\.tar\.zst$" || true); do
+                printf '%s\n' "$f"
+              done | sort -Vr
+            )
+            total=${#versions[@]}
+            kept=0
+            to_delete=()
+            for line in "${versions[@]}"; do
+              kept=$(( kept + 1 ))
+              if (( kept > KEEP_N )); then
+                to_delete+=( "$line" )
+              fi
+            done
+            if (( ${#to_delete[@]} == 0 )); then
+              echo "$pkgname: $total paquetes, dentro de la ventana de $KEEP_N; nada que podar"
+              continue
+            fi
+            newest="${versions[0]}"
+            danger="$(comm -12 <(printf '%s\n' "${to_delete[@]}" | sort -u) <(printf '%s\n' "$db_files"))"
+            if [[ -n "$danger" ]]; then
+              echo "la poda tocaría archivos que el db todavía sirve:" >&2
+              printf '%s\n' "$danger" >&2
+              # Mecanismo del db (bin/unpublish-packages): retira las entradas
+              # del pkgbase (split y -debug incluidos) y bin/publish-artifact
+              # re-agrega la más nueva, así el db sirve exactamente lo que
+              # queda en el árbol.
+              bash omarchy-pkgs/bin/unpublish-packages --remote "$REPO_DIR" --mirror stable --arch x86_64 $PKG_BASES
+              bash omarchy-pkgs/bin/publish-artifact --remote "$REPO_DIR" --mirror stable --arch x86_64 "$CHANNEL/$newest"
+              db_files="$(db_filenames | sort -u)"
+            fi
+            for f in "${to_delete[@]}"; do
+              if grep -qxF "$f" <<<"$db_files"; then
+                echo "salto $f: el db todavía lo sirve" >&2
+                continue
+              fi
+              rm -f "$CHANNEL/$f" "$CHANNEL/$f.sig"
+              echo "podado: $f"
+            done
+          done
+          echo "poda lista: últimos $KEEP_N paquetes por pkgname en stable/x86_64"
+
+      - name: Sign the databases and push gh-pages
+        if: github.event_name == 'repository_dispatch' && steps.channel.outputs.published != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          PKG_NAME: ${{ steps.publish.outputs.pkgname }}
+          PKG_VER: ${{ steps.build.outputs.pkgver }}
+        run: |
+          set -euo pipefail
+
+          cd repo
+          sign_databases() {
+            # GitHub Pages no sirve symlinks: el db y los files van como copias.
+            for f in stable/x86_64/omarchy.db stable/x86_64/omarchy.files; do
+              if [[ -L "$f" ]]; then
+                rl="$(readlink "$f")"
+                rm -f "$f"
+                cp -L "$(dirname "$f")/$rl" "$f"
+              fi
+            done
+            export GNUPGHOME="$(mktemp -d)"
+            gpg --batch --quiet --import <<<"$GPG_PRIVATE_KEY"
+            gpg --batch --yes --detach-sign --armor --output stable/x86_64/omarchy.db.sig stable/x86_64/omarchy.db
+            gpg --batch --yes --detach-sign --armor --output stable/x86_64/omarchy.files.sig stable/x86_64/omarchy.files
+            # El pacman.conf del fork usa la sección [omarchy-personal]: el db
+            # se publica también con ese nombre para que el repo sombreado
+            # resuelva.
+            cp stable/x86_64/omarchy.db stable/x86_64/omarchy-personal.db
+            cp stable/x86_64/omarchy.files stable/x86_64/omarchy-personal.files
+            gpg --batch --yes --detach-sign --armor --output stable/x86_64/omarchy-personal.db.sig stable/x86_64/omarchy-personal.db
+            gpg --batch --yes --detach-sign --armor --output stable/x86_64/omarchy-personal.files.sig stable/x86_64/omarchy-personal.files
+            rm -rf "$GNUPGHOME"
+          }
+          sign_databases
+          git config user.name "Roberto Flores"
+          git config user.email "25asab015@ujmd.edu.sv"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "sin cambios en gh-pages: el canal ya sirve esta versión"
+          else
+            git commit -m "publish: ${PKG_NAME} ${PKG_VER}"
+            # Dos pipelines del canal pueden publicar casi a la vez: ambas
+            # parten del mismo base de gh-pages y el segundo push muere con
+            # non-fast-forward (run real 40798818147). Los db son artefactos
+            # que repo-add regenera, así que un rebase no puede fusionar los
+            # dos commits: la resolución es re-aplicar la publicación sobre
+            # el gh-pages remoto (publish-artifact sobre el árbol remoto +
+            # firma) y empujar de nuevo. Hasta 3 reintentos con backoff
+            # corto; solo muere al agotarlos.
+            pkg_files=( "$GITHUB_WORKSPACE"/build/*.pkg.tar.zst )
+            if (( ${#pkg_files[@]} != 1 )) || [[ ! -e "${pkg_files[0]}" ]]; then
+              echo "no quedó exactamente un .pkg.tar.zst para re-publicar" >&2
+              exit 1
+            fi
+            retries=3
+            until git push origin gh-pages; do
+              if (( retries == 0 )); then
+                echo "el push a gh-pages sigue rechazado tras los reintentos" >&2
+                exit 1
+              fi
+              : $(( retries -= 1 ))
+              sleep $(( (3 - retries) * 2 ))
+              git fetch origin gh-pages
+              git reset --hard FETCH_HEAD
+              git clean -fd
+              ( cd "$GITHUB_WORKSPACE" && bash omarchy-pkgs/bin/publish-artifact --remote "$GITHUB_WORKSPACE/repo" --mirror stable --arch x86_64 "${pkg_files[0]}" )
+              sign_databases
+              git add -A
+              if ! git diff --cached --quiet; then
+                git commit -m "publish: ${PKG_NAME} ${PKG_VER}"
+              fi
+            done
+          fi
+
+      # Fallo de build, prueba o publicación → issue automático en este repo
+      # con el log del run como artifact y el label bug: este repo solo tiene
+      # labels estándar y gh issue create muere con un label inexistente
+      # (ready-for-agent del patrón no existe acá), dejando el fallo sin
+      # issue. Dedupe por título.
+      - name: Collect the failure log
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh run view -R "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" --log-failed > failed-package.log 2>&1 || true
+
+      - name: Upload the failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-failure-${{ github.run_id }}
+          path: failed-package.log
+          if-no-files-found: ignore
+
+      - name: Open the failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PKG_VER: ${{ steps.build.outputs.pkgver }}
+        run: |
+          set -euo pipefail
+
+          failed_jobs="$(gh run view -R "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" --json jobs --jq '[.jobs[] | select(.conclusion == "failure") | .name + ": " + ([.steps[] | select(.conclusion == "failure") | .name] | join(", "))] | join(" | ")')"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          title="[Pipeline] fallo de package.yml (${GITHUB_SHA::7})"
+          body="Fallo de build, prueba o publicación en el pipeline del paquete.
+
+          - Run: $run_url
+          - Trabajo y pasos fallidos: $failed_jobs
+          - Log adjunto: artifact package-failure-$GITHUB_RUN_ID del run.
+          - Versión empaquetada: ${PKG_VER:-desconocida}"
+
+          if gh issue list -R "$GITHUB_REPOSITORY" --state open --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "ya existe un issue abierto para este fallo: $title"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "$body" --label bug
+          fi

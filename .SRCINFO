@@ -1,15 +1,17 @@
 pkgbase = ravn-git-bare-clone
 	pkgdesc = Launcher y runtime modular de clonación bare y gestión de worktrees
-	pkgver = 0.1.0
+	pkgver = 0.2.1
 	pkgrel = 1
 	url = https://github.com/robert-flo/ravn-git-bare-clone
 	arch = any
 	license = MIT
+	makedepends = make
+	depends = bash
 	depends = git
 	depends = github-cli
 	depends = jq
 	options = !debug
-	source = ravn-git-bare-clone-0.1.0.tar.gz::https://github.com/robert-flo/ravn-git-bare-clone/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = d8aa6532e86c6f06612e770ed6c321de4261b338fb79b06aebd41156a4353464
+	source = ravn-git-bare-clone-0.2.1.tar.gz::https://github.com/robert-flo/ravn-git-bare-clone/archive/refs/tags/v0.2.1.tar.gz
+	sha256sums = 3ba7f1dbd4c90ebe16e7a66ca6b7f24f5c06f2f509c6bb115882e8a833adbbcf
 
 pkgname = ravn-git-bare-clone

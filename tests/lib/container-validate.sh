@@ -15,7 +15,7 @@ set -Eeuo pipefail
 phase_install_prereqs() {
   printf '\n==> [container 1/5] Refreshing Arch and installing exact prerequisites\n'
   printf '    These packages exist only inside this disposable container.\n\n'
-  pacman -Syu --noconfirm --needed fakeroot sudo git github-cli jq
+  pacman -Syu --noconfirm --needed fakeroot sudo make git github-cli jq
 }
 
 phase_create_builder_user() {
@@ -52,6 +52,7 @@ phase_build_and_install() {
 
 phase_verify_binaries_and_symlinks() {
   local bins=(
+    "/usr/bin/ravn-wt"
     "/usr/bin/ravn-git-bare-clone"
     "/usr/bin/git-bare-clone"
     "/usr/bin/git-create-worktree"
@@ -64,35 +65,49 @@ phase_verify_binaries_and_symlinks() {
     test -x "$b"
   done
 
-  test -x /opt/ravn-git-bare-clone/ravn-git-bare-clone
-  test -x /opt/ravn-git-bare-clone/bin/git-bare-clone
-  test -x /opt/ravn-git-bare-clone/bin/git-create-worktree
-  test -x /opt/ravn-git-bare-clone/bin/git-issue-worktree
-  test -f /opt/ravn-git-bare-clone/runtime/commands.tsv
-  test -f /opt/ravn-git-bare-clone/runtime/lib/global_fn.sh
+  test -x /opt/ravn-wt/ravn-wt
+  test -x /opt/ravn-wt/bin/git-bare-clone
+  test -x /opt/ravn-wt/bin/git-create-worktree
+  test -x /opt/ravn-wt/bin/git-issue-worktree
+  test -f /opt/ravn-wt/runtime/commands.tsv
+  test -f /opt/ravn-wt/runtime/lib/global_fn.sh
+  test -f /usr/share/licenses/ravn-git-bare-clone/LICENSE
+  test -L /usr/share/bash-completion/completions/ravn-wt
+  test -L /usr/share/bash-completion/completions/ravn-git-bare-clone
+  test -L /usr/share/bash-completion/completions/git-bare-clone
+  test -L /usr/share/zsh/site-functions/_ravn-wt
+  test -L /usr/share/zsh/site-functions/_ravn-git-bare-clone
+  test -L /usr/share/zsh/site-functions/_git-bare-clone
 }
 
 phase_exercise_public_commands() {
   printf '\n==> [container 5/5] Confirming the installed public commands behave as expected\n'
   phase_verify_binaries_and_symlinks
 
+  /usr/bin/ravn-wt help > /tmp/ravn-wt-help.txt
+  grep -Fq "ravn-wt" /tmp/ravn-wt-help.txt
+  grep -Fq "clone" /tmp/ravn-wt-help.txt
+  grep -Fq "sync" /tmp/ravn-wt-help.txt
+  grep -Fq "create" /tmp/ravn-wt-help.txt
+  grep -Fq "issue" /tmp/ravn-wt-help.txt
+
   /usr/bin/ravn-git-bare-clone help > /tmp/ravn-help.txt
-  grep -Fq "ravn-git-bare-clone" /tmp/ravn-help.txt
+  grep -Fq "ravn-wt" /tmp/ravn-help.txt
   grep -Fq "clone" /tmp/ravn-help.txt
   grep -Fq "sync" /tmp/ravn-help.txt
   grep -Fq "create" /tmp/ravn-help.txt
   grep -Fq "issue" /tmp/ravn-help.txt
 
   /usr/bin/git-bare-clone --help > /tmp/clone-help.txt
-  grep -Fq "ravn-git-bare-clone clone" /tmp/clone-help.txt
+  grep -Fq "ravn-wt clone" /tmp/clone-help.txt
 
   /usr/bin/git-create-worktree --help > /tmp/create-help.txt
-  grep -Fq "ravn-git-bare-clone create" /tmp/create-help.txt
+  grep -Fq "ravn-wt create" /tmp/create-help.txt
 
   /usr/bin/git-issue-worktree --help > /tmp/issue-help.txt
-  grep -Fq "ravn-git-bare-clone issue" /tmp/issue-help.txt
+  grep -Fq "ravn-wt issue" /tmp/issue-help.txt
 
-  printf '==> [container 5/5] PASS: all 4 public commands and payload verified\n'
+  printf '==> [container 5/5] PASS: all 5 public commands and payload verified\n'
 }
 
 main() {
