@@ -86,7 +86,7 @@ check_host_deps() {
 }
 
 validate_source_dir() {
-  if [[ -z "$source_dir" || ! -d "$source_dir" || ! -f "$source_dir/ravn-git-bare-clone" ]]; then
+  if [[ -z "$source_dir" || ! -d "$source_dir" ]] || [[ ! -f "$source_dir/ravn-wt" && ! -f "$source_dir/ravn-git-bare-clone" ]]; then
     printf '%s\n\n' 'ERROR: Set SOURCE_DIR to a ravn-git-bare-clone source checkout.' >&2
     usage >&2
     exit 2
