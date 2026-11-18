@@ -118,7 +118,9 @@ jobs:
 
           test_home=/tmp/ravn-git-bare-clone-package-test
           mkdir -p "$test_home"
-          NO_COLOR=1 HOME="$test_home" TERM=dumb /usr/bin/ravn-wt help > /tmp/ravn-wt-help-output
+          git config --file "$test_home/.gitconfig" user.name "Arch Container"
+          git config --file "$test_home/.gitconfig" user.email "ci@archlinux.local"
+          NO_COLOR=1 HOME="$test_home" USER_NAME="Arch Container" USER_EMAIL="ci@archlinux.local" TERM=dumb /usr/bin/ravn-wt help > /tmp/ravn-wt-help-output
           grep -Fq 'ravn-wt' /tmp/ravn-wt-help-output
           grep -Fq 'clone' /tmp/ravn-wt-help-output
 
