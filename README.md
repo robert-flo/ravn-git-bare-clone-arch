@@ -9,12 +9,13 @@ on your machine.
 Upstream project: [robert-flo/ravn-git-bare-clone.git](https://github.com/robert-flo/ravn-git-bare-clone.git)
 
 The installed package provides the public commands at:
+- `/usr/bin/ravn-wt`
 - `/usr/bin/ravn-git-bare-clone`
 - `/usr/bin/git-bare-clone`
 - `/usr/bin/git-create-worktree`
 - `/usr/bin/git-issue-worktree`
 
-It keeps the private implementation under `/opt/ravn-git-bare-clone`.
+It keeps the private implementation under `/opt/ravn-wt`.
 
 ---
 

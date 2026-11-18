@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PACKAGE_DIR
+# shellcheck disable=SC2016 # Literal PKGBUILD line, expanded by makepkg.
+readonly SOURCE_LINE='source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")'
 
 test_dir=""
 
@@ -30,6 +32,14 @@ setup() {
 
   cat > "$test_dir/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
+if [[ -n ${MOCK_GH_REPO_MISSING:-} ]]; then
+  printf 'gh: Not Found (HTTP 404)\n' >&2
+  exit 1
+fi
+if [[ -n ${MOCK_GH_NO_RELEASES:-} && "$*" == *'releases/latest'* ]]; then
+  printf 'gh: Not Found (HTTP 404)\n' >&2
+  exit 1
+fi
 printf '%s\n' '{"tag_name":"v9.8.7"}'
 MOCK_GH
 
@@ -68,6 +78,38 @@ test_check_detects_release() {
   assert_file_line "archive_sha256=$expected_checksum" "$output_file"
 }
 
+test_check_exits_clean_without_releases() {
+  local output_file="$test_dir/no-releases-output"
+  local log="$test_dir/no-releases.log"
+  local status=0
+
+  MOCK_GH_NO_RELEASES=1 \
+    PATH="$test_dir/bin:$PATH" \
+    PKGBUILD_PATH="$test_dir/PKGBUILD" \
+    GITHUB_OUTPUT="$output_file" \
+    "$PACKAGE_DIR/scripts/check_upstream.sh" >"$log" 2>&1 || status=$?
+
+  [[ $status -eq 0 ]] \
+    || die "an upstream without releases must exit 0 (got $status): $(cat "$log")"
+  grep -q 'nada que actualizar' "$log" \
+    || die "missing the no-releases report: $(cat "$log")"
+  [[ ! -s $output_file ]] \
+    || die "a run without releases must not write outputs: $(cat "$output_file")"
+}
+
+test_check_dies_when_upstream_repo_is_missing() {
+  local log="$test_dir/repo-missing.log"
+  local status=0
+
+  MOCK_GH_NO_RELEASES=1 MOCK_GH_REPO_MISSING=1 \
+    PATH="$test_dir/bin:$PATH" \
+    PKGBUILD_PATH="$test_dir/PKGBUILD" \
+    "$PACKAGE_DIR/scripts/check_upstream.sh" >"$log" 2>&1 || status=$?
+
+  [[ $status -ne 0 ]] \
+    || die "a missing upstream repo must still fail the script: $(cat "$log")"
+}
+
 test_update_changes_version_and_resets_release() {
   local checksum
   checksum="$(printf '%s\n' 'deterministic upstream archive fixture' | sha256sum | awk '{print $1}')"
@@ -80,6 +122,22 @@ test_update_changes_version_and_resets_release() {
   assert_file_line 'pkgver=9.8.7' "$test_dir/PKGBUILD"
   assert_file_line 'pkgrel=1' "$test_dir/PKGBUILD"
   assert_file_line "  '$checksum'" "$test_dir/PKGBUILD"
+  assert_file_line "$SOURCE_LINE" "$test_dir/PKGBUILD"
+}
+
+test_pkgbuild_uses_tag_archive() {
+  assert_file_line "$SOURCE_LINE" "$PACKAGE_DIR/PKGBUILD"
+  assert_file_line "url='https://github.com/robert-flo/ravn-git-bare-clone'" "$PACKAGE_DIR/PKGBUILD"
+}
+
+test_workflow_chains_publication() {
+  local workflow="$PACKAGE_DIR/.github/workflows/update-upstream.yml"
+  assert_file_line '      - upstream-released' "$workflow"
+  grep -qF 'echo "pushed=true" >>' "$workflow" \
+    || die "update-upstream.yml does not record the metadata push"
+  assert_file_line "        if: steps.commit.outputs.pushed == 'true'" "$workflow"
+  grep -qF -- '-f event_type=source-updated' "$workflow" \
+    || die "update-upstream.yml does not dispatch source-updated after the push"
 }
 
 test_check_sees_matching_package() {
@@ -109,7 +167,11 @@ test_same_version_checksum_change_increments_release() {
 
 main() {
   setup
+  test_pkgbuild_uses_tag_archive
+  test_workflow_chains_publication
   test_check_detects_release
+  test_check_exits_clean_without_releases
+  test_check_dies_when_upstream_repo_is_missing
   test_update_changes_version_and_resets_release
   test_check_sees_matching_package
   test_same_version_checksum_change_increments_release
